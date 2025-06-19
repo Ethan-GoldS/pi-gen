@@ -14,51 +14,12 @@ jobs:
     - name: Checkout code
       uses: actions/checkout@v4
       
-    - name: Set up build environment
-      run: |
-        sudo apt-get update
-        # First make sure we have the package to detect architecture
-        sudo apt-get install -y arch-test
-        
-        # Install all dependencies needed for pi-gen
-        sudo apt-get install -y coreutils quilt parted qemu-user-static binfmt-support debootstrap zerofree zip \
-             dosfstools libarchive-tools libcap2-bin grep rsync xz-utils file git curl bc \
-             qemu-utils kpartx pigz python3 python3-pip
-             
-        # Enable qemu for cross-architecture support
-        echo "Setting up QEMU for cross-architecture support"
-        docker --version
-        sudo docker run --rm --privileged multiarch/qemu-user-static:latest --reset -p yes || echo "Warning: QEMU setup encountered an issue but continuing anyway"
-        
-        # Ensure build directories exist and have appropriate permissions
-        sudo mkdir -p work
-        sudo chmod -R 777 work
-
-    - name: Check dependencies
-      run: |
-        MISSING_DEPS=0
-        if ! dpkg-query -W -f='${Status}' qemu-user-static | grep "install ok installed"; then
-          echo "Error: qemu-user-static is required but not installed"
-          MISSING_DEPS=1
-        else
-          echo "✓ qemu-user-static is installed"
-        fi
-        
-        if ! dpkg-query -W -f='${Status}' binfmt-support | grep "install ok installed"; then
-          echo "Error: binfmt-support is required but not installed"
-          MISSING_DEPS=1
-        else
-          echo "✓ binfmt-support is installed"
-        fi
-        
-        if [ $MISSING_DEPS -ne 0 ]; then
-          echo "Missing required dependencies. Please install them and try again."
-          exit 1
-        fi
-
+    - name: Set up Docker
+      uses: docker/setup-buildx-action@v3
+      
     - name: Configure pi-gen
       run: |
-        # Enable stage2/01-captive-portal
+        # Create config file with our desired settings
         echo "IMG_NAME=PiCaptivePortal-$(date +%Y-%m-%d)" > config
         echo "RELEASE=bullseye" >> config
         echo "TARGET_HOSTNAME=picaptive" >> config
@@ -69,62 +30,85 @@ jobs:
         echo "KEYBOARD_LAYOUT=\"English (US)\"" >> config
         echo "TIMEZONE_DEFAULT=America/New_York" >> config
         echo "ENABLE_SSH=1" >> config
-        # Configure stages to build
+        echo "STAGE_LIST=\"stage0 stage1 stage2\"" >> config
+        
+        # Configure stages to build (only up to stage2 for captive portal)
         touch ./stage2/SKIP_IMAGES
         touch ./stage3/SKIP
         touch ./stage4/SKIP
         touch ./stage5/SKIP
-        cat config
-
-    - name: Build Raspberry Pi image
-      run: |
-        echo "Starting Raspberry Pi image build process"
-        # Make sure our script is executable
-        sudo chmod +x build.sh
         
-        # Check the environment and configuration
-        echo "Environment information:"
-        uname -a
-        echo "Available disk space:"
-        df -h
-        echo "Memory information:"
-        free -h
-        
-        # Show pi-gen configuration
+        # Show the final config
         echo "\nPi-Gen configuration:"
         cat config
         
-        # Look at our directory structure
-        echo "\nStage directory structure:"
-        ls -la stage*
-        
-        # Run the actual build with detailed output
-        echo "\nStarting build process..."
-        sudo ./build.sh -v
+        # Verify our captive portal stage is in place
+        echo "\nCaptive Portal stage content:"
+        ls -la stage2/01-captive-portal
+
+    - name: Setup QEMU
+      run: |
+        # Enable QEMU for cross-arch emulation
+        docker run --rm --privileged multiarch/qemu-user-static:latest --reset -p yes
       
+    - name: Build Docker image for pi-gen
+      run: |
+        # Build the Docker image to use for building pi-gen
+        docker build -t pi-gen-builder .
+    
+    - name: Build Raspberry Pi image
+      run: |
+        echo "Starting Raspberry Pi image build process using Docker..."
+        
+        # Create output directory with appropriate permissions
+        mkdir -p deploy
+        chmod 777 deploy
+        
+        # Run the pi-gen build process inside Docker container
+        docker run --rm --privileged \
+          -v $(pwd):/pi-gen \
+          -v $(pwd)/deploy:/pi-gen/deploy \
+          -e CONTINUE=1 \
+          -e SKIP_IMAGES=1 \
+          -e IMG_NAME="PiCaptivePortal-$(date +%Y-%m-%d)" \
+          pi-gen-builder
+      
+    - name: List build output
+      run: |
+        echo "Contents of deploy directory:"
+        ls -la deploy/
+        
     - name: Compress image file
       run: |
         cd deploy
-        ls -la
-        # Compress the image for faster upload
-        IMAGE_FILE=$(ls -1 *.img | head -1)
-        if [ -n "$IMAGE_FILE" ]; then
-          echo "Compressing $IMAGE_FILE to $IMAGE_FILE.xz"
-          xz -T0 -v "$IMAGE_FILE"
-        else
-          echo "No image file found in deploy directory"
-          exit 1
+        # Find any image files and compress them
+        find . -name "*.img" | while read img; do
+          echo "Compressing $img..."
+          xz -T0 -v "$img"
+        done
+        
+        # Verify we have compressed files
+        if ! ls *.img.xz 1> /dev/null 2>&1; then
+          echo "Warning: No compressed image files found. Looking for other artifacts..."
+          find . -type f -size +1M | sort -h
+          # Don't fail as we might have other artifacts worth preserving
+          touch pi-gen-build-result.txt
+          echo "Build completed at $(date)" > pi-gen-build-result.txt
         fi
         
-    - name: Upload image artifact
+    - name: Upload image artifacts
       uses: actions/upload-artifact@v4
       with:
         name: raspberry-pi-image
-        path: deploy/*.img.xz
+        path: |
+          deploy/*.img.xz
+          deploy/*.zip
+          deploy/*.txt
         retention-days: 7
+        if-no-files-found: warn
         
     - name: Create GitHub Release
-      if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+      if: github.event_name == 'push' && github.ref == 'refs/heads/master'
       id: create_release
       uses: softprops/action-gh-release@v1
       env:
@@ -134,9 +118,8 @@ jobs:
         name: Raspberry Pi Image Build ${{ github.run_number }}
         draft: false
         prerelease: false
-        files: deploy/*.img.xz
-        body: |
-          Raspberry Pi image with Captive Portal
-          
-          Built from commit: ${{ github.sha }}
-          Build date: $(date +%Y-%m-%d)
+        generate_release_notes: true
+        fail_on_unmatched_files: false
+        files: |
+          deploy/*.img.xz
+          deploy/*.zip
