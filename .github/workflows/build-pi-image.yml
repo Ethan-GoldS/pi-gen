@@ -17,9 +17,20 @@ jobs:
     - name: Set up build environment
       run: |
         sudo apt-get update
+        # First make sure we have the package to detect architecture
+        sudo apt-get install -y arch-test
+        
+        # Install all dependencies needed for pi-gen
         sudo apt-get install -y coreutils quilt parted qemu-user-static binfmt-support debootstrap zerofree zip \
              dosfstools libarchive-tools libcap2-bin grep rsync xz-utils file git curl bc \
-             qemu-utils kpartx
+             qemu-utils kpartx pxz pigz python3 python3-pip
+             
+        # Enable qemu for cross-architecture support
+        sudo docker run --rm --privileged multiarch/qemu-user-static --reset -p yes
+        
+        # Ensure build directories exist and have appropriate permissions
+        sudo mkdir -p work
+        sudo chmod -R 777 work
 
     - name: Check dependencies
       run: |
