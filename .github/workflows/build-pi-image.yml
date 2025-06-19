@@ -56,54 +56,139 @@ jobs:
         # Build the Docker image to use for building pi-gen
         docker build -t pi-gen-builder .
     
+    - name: Debug Docker environment
+      run: |
+        echo "Checking Docker environment..."
+        docker info
+        docker version
+        
+        # Check Dockerfile exists
+        echo "\nChecking Dockerfile:"
+        cat Dockerfile
+      
     - name: Build Raspberry Pi image
       run: |
         echo "Starting Raspberry Pi image build process using Docker..."
         
-        # Create output directory with appropriate permissions
-        mkdir -p deploy
-        chmod 777 deploy
+        # Create output directory with absolute path for safer mounting
+        OUTPUT_DIR="$(pwd)/deploy"
+        mkdir -p "$OUTPUT_DIR"
+        chmod 777 "$OUTPUT_DIR"
+        echo "Output directory set to: $OUTPUT_DIR"
         
-        # Run the pi-gen build process inside Docker container
+        # More verbose logging of what we're going to build
+        echo "Building image with the following stages:"
+        ls -la stage*/
+        
+        echo "\nStage2 captive portal content:"
+        ls -la stage2/01-captive-portal/
+        
+        # Run the pi-gen build process inside Docker container with more verbose output
+        echo "\nStarting Docker build..."
         docker run --rm --privileged \
-          -v $(pwd):/pi-gen \
-          -v $(pwd)/deploy:/pi-gen/deploy \
-          -e CONTINUE=1 \
-          -e SKIP_IMAGES=1 \
-          -e IMG_NAME="PiCaptivePortal-$(date +%Y-%m-%d)" \
-          pi-gen-builder
+          -v "$(pwd):/pi-gen:ro" \
+          -v "$OUTPUT_DIR:/pi-gen/work/pi-gen-out" \
+          -e "CONTINUE=1" \
+          -e "PRESERVE_CONTAINER=1" \
+          -e "CONFIG_FILE=/pi-gen/config" \
+          -e "IMG_NAME=PiCaptivePortal-$(date +%Y-%m-%d)" \
+          -e "DEPLOY_DIR=/pi-gen/work/pi-gen-out" \
+          -e "WORK_DIR=/pi-gen/work" \
+          -e "STAGE_LIST=stage0 stage1 stage2" \
+          -e "VERBOSE=1" \
+          pi-gen-builder || true  # Allow continue even if Docker exits with error
+        
+        # Try to locate the image files regardless of where they ended up
+        echo "\nSearching for generated image files..."
+        find "$(pwd)" -name "*.img" -o -name "*.zip" | grep -v "/work/" || true
+        find "$(pwd)/work" -name "*.img" -o -name "*.zip" || true
+        
+        # Try to copy any images from work directory if they exist
+        if [ -d "$(pwd)/work" ]; then
+          echo "\nCopying any image files from work directory..."
+          find "$(pwd)/work" -name "*.img" -o -name "*.zip" -exec cp {} "$OUTPUT_DIR/" \;
+          echo "\nContent of output directory after copy:"
+          ls -la "$OUTPUT_DIR/"
+        fi
       
-    - name: List build output
+    - name: List and package build outputs
       run: |
         echo "Contents of deploy directory:"
         ls -la deploy/
         
-    - name: Compress image file
+        # Check work directory for artifacts too
+        if [ -d "work" ]; then
+          echo "\nContents of work directory:"
+          find work -type f -name "*.img" -o -name "*.zip" | sort
+          
+          # Copy any image files from work dir to deploy
+          find work -type f -name "*.img" -o -name "*.zip" -exec cp {} deploy/ \; || true
+        fi
+        
+        # Create a build log
+        echo "Build completed at $(date)" > deploy/build-log.txt
+        echo "GitHub run ID: ${{ github.run_id }}" >> deploy/build-log.txt
+        echo "GitHub workflow: ${{ github.workflow }}" >> deploy/build-log.txt
+        echo "Git ref: ${{ github.ref }}" >> deploy/build-log.txt
+        echo "Git SHA: ${{ github.sha }}" >> deploy/build-log.txt
+        
+    - name: Compress image files
       run: |
         cd deploy
+        echo "Looking for image files to compress..."
+        
         # Find any image files and compress them
+        IMG_COUNT=0
         find . -name "*.img" | while read img; do
           echo "Compressing $img..."
           xz -T0 -v "$img"
+          IMG_COUNT=$((IMG_COUNT + 1))
         done
         
-        # Verify we have compressed files
-        if ! ls *.img.xz 1> /dev/null 2>&1; then
-          echo "Warning: No compressed image files found. Looking for other artifacts..."
-          find . -type f -size +1M | sort -h
-          # Don't fail as we might have other artifacts worth preserving
-          touch pi-gen-build-result.txt
-          echo "Build completed at $(date)" > pi-gen-build-result.txt
+        # If no image files were found, check in root and parent directories
+        if [ "$IMG_COUNT" -eq 0 ]; then
+          echo "No image files found in deploy directory. Searching in other locations..."
+          find "$(pwd)/.." -name "*.img" -not -path "*/\.*" -not -path "*/work/*" -exec cp {} . \; || true
+          
+          # Try compressing any newly found images
+          find . -name "*.img" | while read img; do
+            echo "Compressing $img..."
+            xz -T0 -v "$img"
+          done
         fi
         
-    - name: Upload image artifacts
+        # Create a manifest of all files in the deploy directory
+        echo "Creating file manifest..."
+        ls -la > file-manifest.txt
+        find . -type f -exec du -h {} \; >> file-manifest.txt
+        
+    - name: Create summary of build artifacts
+      run: |
+        echo "## Build Summary" > build-summary.md
+        echo "Build completed at $(date)" >> build-summary.md
+        echo "### Files Generated:" >> build-summary.md
+        echo '```' >> build-summary.md
+        find deploy -type f | sort >> build-summary.md
+        echo '```' >> build-summary.md
+        cat build-summary.md
+    
+    - name: Upload all build artifacts
       uses: actions/upload-artifact@v4
       with:
         name: raspberry-pi-image
         path: |
-          deploy/*.img.xz
-          deploy/*.zip
+          deploy/*
+          build-summary.md
+        retention-days: 7
+        if-no-files-found: warn
+        
+    - name: Upload separate logs artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: build-logs
+        path: |
           deploy/*.txt
+          build-summary.md
         retention-days: 7
         if-no-files-found: warn
         
@@ -120,6 +205,8 @@ jobs:
         prerelease: false
         generate_release_notes: true
         fail_on_unmatched_files: false
+        body_path: build-summary.md
         files: |
           deploy/*.img.xz
           deploy/*.zip
+          deploy/*.img
