@@ -1,0 +1,97 @@
+name: Build Raspberry Pi Image
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+      
+    - name: Set up build environment
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y coreutils quilt parted qemu-user-static debootstrap zerofree zip \
+             dosfstools libarchive-tools libcap2-bin grep rsync xz-utils file git curl bc \
+             qemu-utils kpartx
+
+    - name: Check dependencies
+      run: |
+        if ! dpkg-query -W -f='${Status}' qemu-user-static | grep "install ok installed"; then
+          echo "qemu-user-static is required"
+          exit 1
+        fi
+        if ! dpkg-query -W -f='${Status}' binfmt-support | grep "install ok installed"; then
+          echo "binfmt-support is required"
+          exit 1
+        fi
+
+    - name: Configure pi-gen
+      run: |
+        # Enable stage2/01-captive-portal
+        echo "IMG_NAME=PiCaptivePortal-$(date +%Y-%m-%d)" > config
+        echo "RELEASE=bullseye" >> config
+        echo "TARGET_HOSTNAME=picaptive" >> config
+        echo "FIRST_USER_NAME=pi" >> config
+        echo "FIRST_USER_PASS=raspberry" >> config
+        echo "LOCALE_DEFAULT=en_US.UTF-8" >> config
+        echo "KEYBOARD_KEYMAP=us" >> config
+        echo "KEYBOARD_LAYOUT=\"English (US)\"" >> config
+        echo "TIMEZONE_DEFAULT=America/New_York" >> config
+        echo "ENABLE_SSH=1" >> config
+        # Configure stages to build
+        touch ./stage2/SKIP_IMAGES
+        touch ./stage3/SKIP
+        touch ./stage4/SKIP
+        touch ./stage5/SKIP
+        cat config
+
+    - name: Build Raspberry Pi image
+      run: |
+        sudo chmod +x build.sh
+        sudo ./build.sh
+      
+    - name: Compress image file
+      run: |
+        cd deploy
+        ls -la
+        # Compress the image for faster upload
+        IMAGE_FILE=$(ls -1 *.img | head -1)
+        if [ -n "$IMAGE_FILE" ]; then
+          echo "Compressing $IMAGE_FILE to $IMAGE_FILE.xz"
+          xz -T0 -v "$IMAGE_FILE"
+        else
+          echo "No image file found in deploy directory"
+          exit 1
+        fi
+        
+    - name: Upload image artifact
+      uses: actions/upload-artifact@v3
+      with:
+        name: raspberry-pi-image
+        path: deploy/*.img.xz
+        retention-days: 7
+        
+    - name: Create GitHub Release
+      if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+      id: create_release
+      uses: softprops/action-gh-release@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        tag_name: pi-image-${{ github.run_number }}
+        name: Raspberry Pi Image Build ${{ github.run_number }}
+        draft: false
+        prerelease: false
+        files: deploy/*.img.xz
+        body: |
+          Raspberry Pi image with Captive Portal
+          
+          Built from commit: ${{ github.sha }}
+          Build date: $(date +%Y-%m-%d)

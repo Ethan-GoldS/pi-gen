@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Raspberry Pi Setup Portal</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 0;
+            padding: 0;
+            background-color: #f5f5f5;
+            color: #333;
+        }
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: white;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            margin-top: 50px;
+        }
+        h1 {
+            color: #c51d4a;
+            text-align: center;
+        }
+        .raspberry-logo {
+            display: block;
+            margin: 0 auto;
+            width: 150px;
+            height: auto;
+            margin-bottom: 20px;
+        }
+        .button {
+            display: inline-block;
+            background-color: #c51d4a;
+            color: white;
+            padding: 12px 24px;
+            text-align: center;
+            text-decoration: none;
+            font-size: 16px;
+            border-radius: 4px;
+            border: none;
+            cursor: pointer;
+            margin-top: 20px;
+        }
+        .button:hover {
+            background-color: #a01a3d;
+        }
+        .center {
+            text-align: center;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <svg class="raspberry-logo" viewBox="0 0 570 720" xmlns="http://www.w3.org/2000/svg">
+            <path d="m158.38 1.6562c-3.6193 0.11835-7.5172 1.4493-11.938 4.9375-10.569-4.0943-20.617-4.6306-29.625 3.0938-14.232-2.0267-18.692 1.8613-22.063 6.5938-3.2436-0.15575-23.238-3.493-33.5 10.844-23.781-0.50913-30.813 26.872-22.406 37.469-4.8773 7.6479 1.3115 16.206 8.9688 24.781-1.2039 5.8934 2.3287 13.021 10.312 19.219-1.3339 9.1959 5.6003 16.474 16.344 20.719-0.985 7.6794 4.4122 14.487 12.594 19.219-1.5175 15.734 14.309 18.326 23.906 18.375 4.5895 11.543 15.281 16.684 25.438 17.75 3.8048 11.827 11.362 15.306 18.875 18.562 1.1419 12.272 5.6401 21.095 20.938 22.656 2.9216 20.409 25.344 14.587 35.25 13.625 4.7131 11.493 9.0009 22.977 32.563 17.344 13.088 18.349 35.144-6.4159 35.656-6.9375 10.872 15.851 21.493-2.2704 32.813-8.7813 7.3772 15.757 19.183 12.187 30.906-1.625 23.578 6.8507 26.144-9.7892 31.25-17.438 10.883 2.2149 20.995-5.293 28.656-16.094 24.116 4.0002 24.11-12.483 27.531-20.969 12.294 0.90351 18.47-6.8106 21.063-16.5 14.023-0.76461 21.531-10.004 19-21.562 12.949-6.6676 14.168-17.421 9.9375-27.531 10.446-12.58 2.8613-21.993-4.2187-30.438 6.1388-13.757-3.6512-21.716-10.844-29.562 5.6482-6.6472-1.4835-30.288-18.188-29.75-2.5116-7.9758-10.235-8.8504-17.656-9.75 0.25062-6.4757-4.0069-11.261-11.094-15.219 0.86165-9.143-5.5197-10.652-10.5-13.031-2.7887-10.929-12.112-13.479-21.344-13.563-6.0308-10.052-13.691-11.794-21.344-14.906-3.6005-11.772-12.992-13.848-22.219-13.438-1.731-13.191-16.789-19.795-31.781-19.906-14.456-21.455-43.956-1.4858-50 1.375-16.9-13.66-35.459 18.256-10.5 31.719-12.074 12.821-0.2488 27.161 13.531 33.219-4.2884 17.95 13.913 27.47 24.031 31.813-3.6387 7.8213-0.011 15.685 5.3438 23.781-5.8386 4.8548-1.7362 14.572 3.25 22.062-11.495 11.001 3.2689 32.361 10.313 29.062-1.3037 16.143 30.392 29.104 31.75 7.7813 27.571 14.221 39.689-25.034 5.9688-24.531 17.344-15.069 23.904-32.121 0.0313-29.062 10.631-6.2199 17.6-26.634-2.375-25 10.26-19.759 15.557-49.852-16.656-31.094 15.567-13.287 14.733-35.193-4.9063-33.219 8.7348-13.669 7.8112-29.134-8.875-29.531 10.387-11.199 9.1034-22.621-7.1562-28.094 8.11-11.437 3.1195-21.76-10.469-25.094 4.3447-14.539-4.9139-20.913-15.594-22.812 1.7385-8.0976-1.6715-13.824-8.7812-17.844-2.8814-14.4 15.523-32.909-27.25-31.188z" fill="#c51d4a"/>
+        </svg>
+        <h1>Welcome to Your Raspberry Pi</h1>
+        <p>You have connected to the PiSetup network. This is a captive portal for initial configuration of your Raspberry Pi device.</p>
+        
+        <h2>Getting Started</h2>
+        <p>This Raspberry Pi has been configured with a captive portal to help you set up your device.</p>
+        <p>You can now proceed to configure your device using the web interface.</p>
+        
+        <div class="center">
+            <button class="button" onclick="window.location.href='/setup'">Continue to Setup</button>
+        </div>
+        
+        <h3>Device Information</h3>
+        <ul>
+            <li>Device: Raspberry Pi</li>
+            <li>Network: PiSetup</li>
+            <li>IP Address: 192.168.4.1</li>
+        </ul>
+        
+        <p class="center">For more information, visit <a href="https://www.raspberrypi.org" target="_blank">www.raspberrypi.org</a></p>
+    </div>
+</body>
+</html>

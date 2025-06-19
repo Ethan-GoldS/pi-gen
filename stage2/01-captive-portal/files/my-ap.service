@@ -1,0 +1,13 @@
+[Unit]
+Description=Raspberry Pi Access Point Service
+After=network.target
+Wants=hostapd.service dnsmasq.service lighttpd.service nodogsplash.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/bash -c "ifconfig wlan0 down && ifconfig wlan0 192.168.4.1 netmask 255.255.255.0 up && iptables -t nat -A POSTROUTING -o eth0 -j MASQUERADE"
+ExecStop=/bin/bash -c "ifconfig wlan0 down"
+
+[Install]
+WantedBy=multi-user.target
