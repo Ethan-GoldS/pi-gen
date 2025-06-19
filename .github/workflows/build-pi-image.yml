@@ -17,18 +17,29 @@ jobs:
     - name: Set up build environment
       run: |
         sudo apt-get update
-        sudo apt-get install -y coreutils quilt parted qemu-user-static debootstrap zerofree zip \
+        sudo apt-get install -y coreutils quilt parted qemu-user-static binfmt-support debootstrap zerofree zip \
              dosfstools libarchive-tools libcap2-bin grep rsync xz-utils file git curl bc \
              qemu-utils kpartx
 
     - name: Check dependencies
       run: |
+        MISSING_DEPS=0
         if ! dpkg-query -W -f='${Status}' qemu-user-static | grep "install ok installed"; then
-          echo "qemu-user-static is required"
-          exit 1
+          echo "Error: qemu-user-static is required but not installed"
+          MISSING_DEPS=1
+        else
+          echo "✓ qemu-user-static is installed"
         fi
+        
         if ! dpkg-query -W -f='${Status}' binfmt-support | grep "install ok installed"; then
-          echo "binfmt-support is required"
+          echo "Error: binfmt-support is required but not installed"
+          MISSING_DEPS=1
+        else
+          echo "✓ binfmt-support is installed"
+        fi
+        
+        if [ $MISSING_DEPS -ne 0 ]; then
+          echo "Missing required dependencies. Please install them and try again."
           exit 1
         fi
 
