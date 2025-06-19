@@ -23,10 +23,12 @@ jobs:
         # Install all dependencies needed for pi-gen
         sudo apt-get install -y coreutils quilt parted qemu-user-static binfmt-support debootstrap zerofree zip \
              dosfstools libarchive-tools libcap2-bin grep rsync xz-utils file git curl bc \
-             qemu-utils kpartx pxz pigz python3 python3-pip
+             qemu-utils kpartx pigz python3 python3-pip
              
         # Enable qemu for cross-architecture support
-        sudo docker run --rm --privileged multiarch/qemu-user-static --reset -p yes
+        echo "Setting up QEMU for cross-architecture support"
+        docker --version
+        sudo docker run --rm --privileged multiarch/qemu-user-static:latest --reset -p yes || echo "Warning: QEMU setup encountered an issue but continuing anyway"
         
         # Ensure build directories exist and have appropriate permissions
         sudo mkdir -p work
@@ -76,8 +78,29 @@ jobs:
 
     - name: Build Raspberry Pi image
       run: |
+        echo "Starting Raspberry Pi image build process"
+        # Make sure our script is executable
         sudo chmod +x build.sh
-        sudo ./build.sh
+        
+        # Check the environment and configuration
+        echo "Environment information:"
+        uname -a
+        echo "Available disk space:"
+        df -h
+        echo "Memory information:"
+        free -h
+        
+        # Show pi-gen configuration
+        echo "\nPi-Gen configuration:"
+        cat config
+        
+        # Look at our directory structure
+        echo "\nStage directory structure:"
+        ls -la stage*
+        
+        # Run the actual build with detailed output
+        echo "\nStarting build process..."
+        sudo ./build.sh -v
       
     - name: Compress image file
       run: |
