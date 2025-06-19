@@ -33,7 +33,6 @@ jobs:
         echo "STAGE_LIST=\"stage0 stage1 stage2\"" >> config
         
         # Configure stages to build (only up to stage2 for captive portal)
-        touch ./stage2/SKIP_IMAGES
         touch ./stage3/SKIP
         touch ./stage4/SKIP
         touch ./stage5/SKIP
@@ -51,38 +50,6 @@ jobs:
         # Enable QEMU for cross-arch emulation
         docker run --rm --privileged multiarch/qemu-user-static:latest --reset -p yes
       
-    - name: Examine pi-gen setup
-      run: |
-        # Display critical information about the repository
-        echo "Repository structure:"
-        ls -la
-        echo "\nDockerfile contents:"
-        if [ -f Dockerfile ]; then
-          cat Dockerfile
-        else
-          echo "WARNING: No Dockerfile found in repository root!"
-          echo "Creating standard pi-gen Dockerfile"
-          cat > Dockerfile << 'EOF'
-          FROM debian:bullseye
-          
-          ENV DEBIAN_FRONTEND=noninteractive
-          
-          RUN apt-get -y update && \
-              apt-get -y install --no-install-recommends \
-                  git vim parted quilt coreutils qemu-user-static debootstrap zerofree zip dosfstools \
-                  bsdtar libcap2-bin grep rsync xz-utils file git curl bc \
-                  qemu-utils kpartx
-          
-          COPY . /pi-gen/
-          
-          VOLUME [ "/pi-gen/work", "/pi-gen/deploy" ]
-          
-          WORKDIR /pi-gen
-          
-          CMD ["bash", "-e", "-o", "pipefail", "-c", "./build.sh; echo 'Build exited with status code $?'"]
-          EOF
-        fi
-    
     - name: Build Docker image for pi-gen
       run: |
         # Build the Docker image to use for building pi-gen
@@ -92,57 +59,17 @@ jobs:
       run: |
         echo "Starting Raspberry Pi image build process using Docker..."
         
-        # Create output directories with appropriate permissions
-        mkdir -p deploy work
-        chmod -R 777 deploy work
-        
-        # Copy our captive portal files to ensure they're in the right place
-        echo "Verifying captive portal stage exists:"
-        ls -la stage2/01-captive-portal
-        
-        # Create a simple build script to run inside Docker
-        cat > build_script.sh << 'EOF'
-        #!/bin/bash
-        set -xe
-        
-        # Print environment and system info
-        echo "Environment variables:"
-        env
-        
-        # Make build script executable
-        chmod +x build.sh
-        
-        # Run the build script
-        ./build.sh -v
-        
-        # Copy any generated files to deploy directory
-        echo "Copying build artifacts to deploy directory"
-        mkdir -p /pi-gen/deploy
-        find /pi-gen/work -type f -name "*.img" -exec cp -v {} /pi-gen/deploy/ \;
-        
-        # If no img files, try to find zip files
-        if [ ! -f /pi-gen/deploy/*.img ]; then
-          find /pi-gen/work -type f -name "*.zip" -exec cp -v {} /pi-gen/deploy/ \;
-        fi
-        
-        # Create a manifest of all files in work directory
-        find /pi-gen/work -type f -name "*img*" -o -name "*.zip" | sort > /pi-gen/deploy/build-artifacts.txt
-        
-        # List final contents of deploy directory
-        echo "Contents of deploy directory:"
-        ls -la /pi-gen/deploy/
-        EOF
-        
-        chmod +x build_script.sh
+        # Create output directory with appropriate permissions
+        mkdir -p deploy
+        chmod 777 deploy
         
         # Run the pi-gen build process inside Docker container
         docker run --rm --privileged \
           -v $(pwd):/pi-gen \
-          -v $(pwd)/work:/pi-gen/work \
           -v $(pwd)/deploy:/pi-gen/deploy \
           -e CONTINUE=1 \
           -e IMG_NAME="PiCaptivePortal-$(date +%Y-%m-%d)" \
-          pi-gen-builder bash /pi-gen/build_script.sh
+          pi-gen-builder
       
     - name: List build output
       run: |
