@@ -30,7 +30,8 @@ jobs:
         echo "KEYBOARD_LAYOUT=\"English (US)\"" >> config
         echo "TIMEZONE_DEFAULT=America/New_York" >> config
         echo "ENABLE_SSH=1" >> config
-        echo "STAGE_LIST=\"stage0 stage1 stage2\"" >> config
+        echo "STAGE_LIST=\"stage0 stage1 stage2 export-image\"" >> config
+        echo "DEPLOY_COMPRESSION=zip" >> config
         
         # Configure stages to build (only up to stage2 for captive portal)
         touch ./stage3/SKIP
@@ -76,22 +77,17 @@ jobs:
         echo "Contents of deploy directory:"
         ls -la deploy/
         
-    - name: Compress image file
+    - name: Check deploy directory contents
       run: |
         cd deploy
-        # Find any image files and compress them
-        find . -name "*.img" | while read img; do
-          echo "Compressing $img..."
-          xz -T0 -v "$img"
-        done
+        echo "Listing all files in deploy directory:"
+        find . -type f -ls
         
-        # Verify we have compressed files
-        if ! ls *.img.xz 1> /dev/null 2>&1; then
-          echo "Warning: No compressed image files found. Looking for other artifacts..."
-          find . -type f -size +1M | sort -h
-          # Don't fail as we might have other artifacts worth preserving
-          touch pi-gen-build-result.txt
+        # If no image files were created, create a report file
+        if ! ls *.img* *.zip 2>/dev/null; then
+          echo "Warning: No image files found. Creating status report..."
           echo "Build completed at $(date)" > pi-gen-build-result.txt
+          echo "Image generation failed. Check the build logs for errors." >> pi-gen-build-result.txt
         fi
         
     - name: Upload image artifacts
