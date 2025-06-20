@@ -46,12 +46,42 @@ jobs:
         echo "\nCaptive Portal stage content:"
         ls -la stage2/01-captive-portal
 
-    - name: Setup for build
+    - name: Setup QEMU and environment
       run: |
         # Fix Git security in Docker
         git config --global --add safe.directory '*'
         
-        # Create needed directories with proper permissions
+        # Make sure binfmt_misc is properly set up
+        echo "Setting up binfmt_misc for cross-architecture emulation"
+        # Try to load the kernel module if it's not already loaded
+        lsmod | grep -q binfmt_misc || sudo modprobe binfmt_misc || echo "binfmt_misc may be built into the kernel"
+        
+        # Make sure the binfmt_misc filesystem is mounted
+        if ! mountpoint -q /proc/sys/fs/binfmt_misc; then
+          sudo mount -t binfmt_misc binfmt_misc /proc/sys/fs/binfmt_misc || echo "binfmt_misc already mounted"
+        fi
+        
+        # Enable proper QEMU for cross-arch emulation with privileged mode
+        sudo docker run --rm --privileged multiarch/qemu-user-static --reset -p yes
+        
+        # Verify binfmt_misc is properly configured
+        echo "Checking binfmt_misc configuration:"
+        ls -la /proc/sys/fs/binfmt_misc/ || echo "Could not list binfmt_misc directory"
+        
+        # Verify ARM binaries can be executed
+        echo "Verifying QEMU ARM emulation is working:"
+        docker run --rm arm32v7/alpine uname -m || echo "ARM emulation test failed"
+      
+    - name: Build Docker image for pi-gen
+      run: |
+        # Build the Docker image to use for building pi-gen
+        docker build -t pi-gen-builder .
+    
+    - name: Build Raspberry Pi image
+      run: |
+        echo "Starting Raspberry Pi image build process using Docker..."
+        
+        # Setup proper directory permissions
         mkdir -p deploy work
         chmod -R 777 deploy work
         
@@ -59,110 +89,98 @@ jobs:
         echo "Directory structure before build:"
         find . -maxdepth 2 -type d | sort
         
-        # Create necessary stage directories
-        echo "Using RPi-Distro/pi-gen Docker image for build"
-    
-    - name: Use direct stage copying approach
-      run: |
-        echo "Creating a directly usable image using pre-built Raspberry Pi OS Lite as base"
+        # Enable debugging
+        echo "VERBOSE=1" >> config
+        echo "DEBUG=1" >> config
         
-        # Get the latest Raspberry Pi OS Lite image
-        curl -L -o deploy/raspios-lite.zip https://downloads.raspberrypi.org/raspios_lite_armhf/images/raspios_lite_armhf-2023-05-03/2023-05-03-raspios-bullseye-armhf-lite.img.xz
+        # Fix Git security in container
+        echo "Running safe Docker container with necessary mounts and environment"
         
-        # Extract and rename it to our custom name
-        cd deploy
-        echo "Extracting Raspberry Pi OS image"
-        unxz -k raspios-lite.zip || echo "Already extracted or not an xz file"
-        mv "$(ls *.img 2>/dev/null || echo raspios-lite.zip)" "PiCaptivePortal-$(date +%Y-%m-%d).img" 2>/dev/null || echo "No .img file found"
-        
-        # Create a documentation file using echo commands instead of heredoc for YAML compatibility
-        echo "Creating documentation"
-        echo "Pi Captive Portal Image" > PiCaptivePortal-README.txt
-        echo "" >> PiCaptivePortal-README.txt
-        echo "This image is based on Raspberry Pi OS Lite with the following customizations:" >> PiCaptivePortal-README.txt
-        echo "" >> PiCaptivePortal-README.txt
-        echo "- Hostname: picaptive" >> PiCaptivePortal-README.txt
-        echo "- Username: pi" >> PiCaptivePortal-README.txt
-        echo "- Password: raspberry" >> PiCaptivePortal-README.txt
-        echo "- SSH enabled" >> PiCaptivePortal-README.txt
-        echo "- Captive portal configured" >> PiCaptivePortal-README.txt
-        echo "- Wi-Fi setup via Docker container" >> PiCaptivePortal-README.txt
-        echo "" >> PiCaptivePortal-README.txt
-        echo "Installation:" >> PiCaptivePortal-README.txt
-        echo "" >> PiCaptivePortal-README.txt
-        echo "1. Flash this image to a microSD card using Raspberry Pi Imager or similar tool" >> PiCaptivePortal-README.txt
-        echo "2. Insert the card into your Raspberry Pi" >> PiCaptivePortal-README.txt
-        echo "3. Power on the device" >> PiCaptivePortal-README.txt
-        echo "4. Connect to the Wi-Fi network named \"PiCaptivePortal\"" >> PiCaptivePortal-README.txt
-        echo "5. Navigate to any webpage to see the captive portal" >> PiCaptivePortal-README.txt
-        echo "" >> PiCaptivePortal-README.txt
-        echo "Login Information:" >> PiCaptivePortal-README.txt
-        echo "" >> PiCaptivePortal-README.txt
-        echo "- Username: pi" >> PiCaptivePortal-README.txt
-        echo "- Password: raspberry" >> PiCaptivePortal-README.txt
-        
-        # List what files we have
-        echo "Files in deploy directory:"
-        ls -la
-        
-        # Compress for artifact upload
-        echo "Compressing image for artifact upload"
-        zip -9 "PiCaptivePortal-$(date +%Y-%m-%d).zip" "PiCaptivePortal-$(date +%Y-%m-%d).img" "PiCaptivePortal-README.txt" || echo "Failed to zip files"
-        
-        cd ..
+        # Run the build process with better unmount handling
+        docker run --rm --privileged \
+          -v $(pwd):/pi-gen:rw \
+          -v $(pwd)/deploy:/pi-gen/deploy:rw \
+          -v $(pwd)/work:/pi-gen/work:rw \
+          -e CONTINUE=1 \
+          -e USE_QEMU=1 \
+          -e IMG_NAME="PiCaptivePortal-$(date +%Y-%m-%d)" \
+          -e VERBOSE=1 \
+          -e DEBUG=1 \
+          -e ENABLE_DEBUG=1 \
+          pi-gen-builder \
+          bash -c "cd /pi-gen && \
+                 git config --global --add safe.directory /pi-gen && \
+                 ./build.sh 2>&1 | tee /pi-gen/deploy/build.log; \
+                 build_exit_code=\${PIPESTATUS[0]}; \
+                 # Force unmounting any stuck mounts before exiting \
+                 echo 'Cleaning up any stuck mounts...'; \
+                 umount -f /pi-gen/work/*/rootfs/dev/pts 2>/dev/null || true; \
+                 umount -f /pi-gen/work/*/rootfs/dev 2>/dev/null || true; \
+                 umount -f /pi-gen/work/*/rootfs/proc 2>/dev/null || true; \
+                 umount -f /pi-gen/work/*/rootfs/sys 2>/dev/null || true; \
+                 umount -f /pi-gen/deploy 2>/dev/null || true; \
+                 # Copy any generated images to deploy directory for artifact collection \
+                 find /pi-gen/work -name '*.img*' -o -name '*.zip' -exec cp -v {} /pi-gen/deploy/ \; ; \
+                 exit \$build_exit_code"
       
     - name: List build output
       run: |
         echo "Contents of deploy directory:"
         ls -la deploy/
-      
+        
     - name: Examine build results and environment
       run: |
         # Check for available disk space
-        echo "===== AVAILABLE DISK SPACE ====="
+        echo $'\n===== AVAILABLE DISK SPACE ====='
         df -h
         
-        echo "===== WORK DIRECTORY CONTENTS ====="
-        ls -la work
-        
-        if [ -d "work/PiCaptivePortal-$(date +%Y-%m-%d)" ]; then
-          echo "===== CONTENTS OF WORK SUBDIRECTORY ====="
-          ls -la "work/PiCaptivePortal-$(date +%Y-%m-%d)"
+        # Check work directory
+        echo $'\n===== WORK DIRECTORY CONTENTS ====='
+        ls -la work/ || echo "No work directory found"
+        if [ -d "work/"*"/" ]; then
+          echo $'\n===== CONTENTS OF WORK SUBDIRECTORY ====='
+          ls -la work/*/ || echo "No subdirectories found"
         fi
         
         # Check if export-image stage ran
-        echo "===== CHECKING FOR IMAGE FILES ====="
+        echo $'\n===== CHECKING FOR IMAGE FILES ====='
         find . -name "*.img" -o -name "*.img.zip" -o -name "*.img.xz" 2>/dev/null || echo "No image files found"
         
         # Check deploy directory content
-        echo "===== DEPLOY DIRECTORY CONTENTS ====="
-        find deploy/ -type f -ls 2>/dev/null || echo "No files in deploy directory"
+        cd deploy
+        echo $'\n===== DEPLOY DIRECTORY CONTENTS ====='
+        find . -type f -ls
         
-        # Check build log for errors
-        if [ -f deploy/build.log ]; then
-          echo "===== BUILD LOG ERRORS ====="
-          grep -i "error\|fail\|warn" deploy/build.log || echo "No errors found in build log"
+        # Check build logs
+        if [ -f "build.log" ]; then
+          echo $'\n===== BUILD LOG ERRORS ====='
+          grep -i "error\|failed\|cannot" build.log | tail -30 || echo "No errors found in build log"
           
-          echo "===== LAST 50 LINES OF BUILD LOG ====="
-          tail -n 50 deploy/build.log
+          echo $'\n===== LAST 50 LINES OF BUILD LOG ====='
+          tail -50 build.log
+        else
+          echo $'\n===== NO BUILD LOG FOUND ====='
         fi
         
         # Create status report if no image found
-        if ! ls deploy/*.img* deploy/*.zip 2>/dev/null; then
-          echo "===== CREATING BUILD STATUS REPORT ====="
-          echo "Build completed at $(date)" > deploy/pi-gen-build-result.txt
-          echo "Image generation failed. Check the build logs for errors." >> deploy/pi-gen-build-result.txt
+        if ! ls *.img* *.zip 2>/dev/null; then
+          echo $'\n===== CREATING BUILD STATUS REPORT ====='
+          echo "Build completed at $(date)" > pi-gen-build-result.txt
+          echo "Image generation failed. Check the build logs for errors." >> pi-gen-build-result.txt
         fi
         
     - name: Upload image artifacts and logs
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
-        name: pi-image-artifacts
+        name: raspberry-pi-image
         path: |
+          deploy/*.*
+          deploy/*.txt
+          deploy/*.log
           deploy/*.img*
           deploy/*.zip
-          deploy/*.txt
-          deploy/build.log
+          work/**/*.img*
+          work/**/*.log
         retention-days: 7
         if-no-files-found: warn
         
