@@ -46,9 +46,21 @@ jobs:
         echo "\nCaptive Portal stage content:"
         ls -la stage2/01-captive-portal
 
-    - name: Setup QEMU
+    - name: Setup QEMU and environment
       run: |
-        # Enable QEMU for cross-arch emulation
+        # Fix Git security in Docker
+        git config --global --add safe.directory '*'
+        
+        # Enable proper QEMU for cross-arch emulation (with kernel module support)
+        docker run --rm --privileged multiarch/qemu-user-static:register --reset
+        
+        # Verify binfmt_misc is properly configured
+        ls -la /proc/sys/fs/binfmt_misc/
+        
+        # Ensure the module is loaded
+        sudo modprobe binfmt_misc || echo "Note: binfmt_misc may already be built into the kernel"
+        
+        # Verify ARM binaries can be executed
         docker run --rm --privileged multiarch/qemu-user-static:latest --reset -p yes
       
     - name: Build Docker image for pi-gen
@@ -72,18 +84,21 @@ jobs:
         echo "VERBOSE=1" >> config
         echo "DEBUG=1" >> config
         
-        # Run the pi-gen build process with debugging enabled
+        # Fix Git security in container
+        echo "Running safe Docker container with necessary mounts and environment"
         docker run --rm --privileged \
-          -v $(pwd):/pi-gen \
-          -v $(pwd)/deploy:/pi-gen/deploy \
-          -v $(pwd)/work:/pi-gen/work \
+          -v $(pwd):/pi-gen:rw \
+          -v $(pwd)/deploy:/pi-gen/deploy:rw \
+          -v $(pwd)/work:/pi-gen/work:rw \
+          -v /proc/sys/fs/binfmt_misc:/proc/sys/fs/binfmt_misc \
           -e CONTINUE=1 \
+          -e USE_QEMU=1 \
           -e IMG_NAME="PiCaptivePortal-$(date +%Y-%m-%d)" \
           -e VERBOSE=1 \
           -e DEBUG=1 \
           -e ENABLE_DEBUG=1 \
           pi-gen-builder \
-          bash -c "cd /pi-gen && ./build.sh 2>&1 | tee /pi-gen/deploy/build.log"
+          bash -c "cd /pi-gen && git config --global --add safe.directory /pi-gen && ./build.sh 2>&1 | tee /pi-gen/deploy/build.log"
       
     - name: List build output
       run: |
