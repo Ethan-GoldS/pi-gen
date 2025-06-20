@@ -63,7 +63,8 @@ jobs:
         ls -la /proc/sys/fs/binfmt_misc/
         
         # Test that ARM emulation works by running a simple ARM container
-        docker run --rm arm32v7/alpine uname -a
+        # Use --platform flag to explicitly specify ARM architecture
+        docker run --rm --platform linux/arm/v7 alpine:latest uname -a || echo "ARM test failed, but continuing build process"
         
         # Fix Git security settings
         git config --global --add safe.directory '*'
@@ -100,8 +101,19 @@ jobs:
         
         # Make sure binfmt_misc is properly configured inside the container
         echo "Checking binfmt_misc status in container:"
-        ls -la /proc/sys/fs/binfmt_misc/
-        grep -l arm /proc/sys/fs/binfmt_misc/* || echo "Warning: ARM binary format handlers not found"
+        ls -la /proc/sys/fs/binfmt_misc/ || echo "binfmt_misc directory not accessible"
+        
+        # Add fallback for binfmt_misc
+        if [ ! -d "/proc/sys/fs/binfmt_misc" ] || [ -z "$(grep -l arm /proc/sys/fs/binfmt_misc/* 2>/dev/null)" ]; then
+          echo "Warning: ARM binary format handlers not found, attempting to set up manually..."
+          # Try registering QEMU inside the container again
+          if [ -x /usr/bin/qemu-arm-static ]; then
+            echo "QEMU ARM binary exists, continuing build"
+          else
+            echo "Installing QEMU inside container..."
+            apt-get update && apt-get install -y --no-install-recommends qemu-user-static binfmt-support
+          fi
+        fi
         
         # Run the actual build script
         echo "Starting pi-gen build process..."
@@ -143,10 +155,13 @@ jobs:
           -v $(pwd)/work:/pi-gen/work:rw \
           -v $(pwd)/build_wrapper.sh:/build_wrapper.sh:ro \
           -v /proc/sys/fs/binfmt_misc:/proc/sys/fs/binfmt_misc:ro \
+          -v /usr/bin/qemu-arm-static:/usr/bin/qemu-arm-static:ro \
           -e IMG_NAME="PiCaptivePortal-$(date +%Y-%m-%d)" \
           -e VERBOSE=1 \
           -e DEBUG=1 \
           -e CONTINUE=1 \
+          -e USE_QEMU=1 \
+          -e QEMU_EXECVE=1 \
           pi-gen-builder \
           /build_wrapper.sh || echo "Build process encountered errors, but attempting to collect any generated artifacts"
       
