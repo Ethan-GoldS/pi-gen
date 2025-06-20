@@ -86,11 +86,15 @@ jobs:
         
         # Fix Git security in container
         echo "Running safe Docker container with necessary mounts and environment"
+        
+        # One more QEMU setup just to be sure
+        docker run --rm --privileged multiarch/qemu-user-static:latest --reset
+        
+        # Run the build process
         docker run --rm --privileged \
           -v $(pwd):/pi-gen:rw \
           -v $(pwd)/deploy:/pi-gen/deploy:rw \
           -v $(pwd)/work:/pi-gen/work:rw \
-          -v /proc/sys/fs/binfmt_misc:/proc/sys/fs/binfmt_misc \
           -e CONTINUE=1 \
           -e USE_QEMU=1 \
           -e IMG_NAME="PiCaptivePortal-$(date +%Y-%m-%d)" \
