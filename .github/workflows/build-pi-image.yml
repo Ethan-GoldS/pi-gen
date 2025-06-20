@@ -60,44 +60,87 @@ jobs:
       run: |
         echo "Starting Raspberry Pi image build process using Docker..."
         
-        # Create output directory with appropriate permissions
-        mkdir -p deploy
-        chmod 777 deploy
+        # Setup proper directory permissions
+        mkdir -p deploy work
+        chmod -R 777 deploy work
         
-        # Run the pi-gen build process inside Docker container
+        # Show what we're working with
+        echo "Directory structure before build:"
+        find . -maxdepth 2 -type d | sort
+        
+        # Enable debugging
+        echo "VERBOSE=1" >> config
+        echo "DEBUG=1" >> config
+        
+        # Run the pi-gen build process with debugging enabled
         docker run --rm --privileged \
           -v $(pwd):/pi-gen \
           -v $(pwd)/deploy:/pi-gen/deploy \
+          -v $(pwd)/work:/pi-gen/work \
           -e CONTINUE=1 \
           -e IMG_NAME="PiCaptivePortal-$(date +%Y-%m-%d)" \
-          pi-gen-builder
+          -e VERBOSE=1 \
+          -e DEBUG=1 \
+          -e ENABLE_DEBUG=1 \
+          pi-gen-builder \
+          bash -c "cd /pi-gen && ./build.sh 2>&1 | tee /pi-gen/deploy/build.log"
       
     - name: List build output
       run: |
         echo "Contents of deploy directory:"
         ls -la deploy/
         
-    - name: Check deploy directory contents
+    - name: Examine build results and environment
       run: |
+        # Check for available disk space
+        echo $'\n===== AVAILABLE DISK SPACE ====='
+        df -h
+        
+        # Check work directory
+        echo $'\n===== WORK DIRECTORY CONTENTS ====='
+        ls -la work/ || echo "No work directory found"
+        if [ -d "work/"*"/" ]; then
+          echo $'\n===== CONTENTS OF WORK SUBDIRECTORY ====='
+          ls -la work/*/ || echo "No subdirectories found"
+        fi
+        
+        # Check if export-image stage ran
+        echo $'\n===== CHECKING FOR IMAGE FILES ====='
+        find . -name "*.img" -o -name "*.img.zip" -o -name "*.img.xz" 2>/dev/null || echo "No image files found"
+        
+        # Check deploy directory content
         cd deploy
-        echo "Listing all files in deploy directory:"
+        echo $'\n===== DEPLOY DIRECTORY CONTENTS ====='
         find . -type f -ls
         
-        # If no image files were created, create a report file
+        # Check build logs
+        if [ -f "build.log" ]; then
+          echo $'\n===== BUILD LOG ERRORS ====='
+          grep -i "error\|failed\|cannot" build.log | tail -30 || echo "No errors found in build log"
+          
+          echo $'\n===== LAST 50 LINES OF BUILD LOG ====='
+          tail -50 build.log
+        else
+          echo $'\n===== NO BUILD LOG FOUND ====='
+        fi
+        
+        # Create status report if no image found
         if ! ls *.img* *.zip 2>/dev/null; then
-          echo "Warning: No image files found. Creating status report..."
+          echo $'\n===== CREATING BUILD STATUS REPORT ====='
           echo "Build completed at $(date)" > pi-gen-build-result.txt
           echo "Image generation failed. Check the build logs for errors." >> pi-gen-build-result.txt
         fi
         
-    - name: Upload image artifacts
+    - name: Upload image artifacts and logs
       uses: actions/upload-artifact@v4
       with:
         name: raspberry-pi-image
         path: |
-          deploy/*.img.xz
-          deploy/*.zip
+          deploy/*.*
           deploy/*.txt
+          deploy/*.log
+          work/*/*.img
+          work/*/*.log
         retention-days: 7
         if-no-files-found: warn
         
@@ -115,5 +158,6 @@ jobs:
         generate_release_notes: true
         fail_on_unmatched_files: false
         files: |
-          deploy/*.img.xz
+          deploy/*.img*
           deploy/*.zip
+          work/*/*.img*
