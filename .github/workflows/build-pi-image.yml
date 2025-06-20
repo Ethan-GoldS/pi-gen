@@ -79,91 +79,40 @@ jobs:
         echo "Starting Raspberry Pi image build process using Docker..."
         
         # Setup proper directory permissions
-        mkdir -p deploy work
-        chmod -R 777 deploy work
+        mkdir -p deploy/images work
+        chmod 777 deploy work build_wrapper.sh
         
         # Show what we're working with
         echo "Directory structure before build:"
         find . -maxdepth 2 -type d | sort
         
-        # Create a custom build script to handle the process properly
-        cat > build_wrapper.sh << 'EOF'
-        #!/bin/bash
-        set -e
-        
-        # Stop the build on error but continue with cleanup
-        trap 'echo "Error detected, performing cleanup before exit"' ERR
-        
-        cd /pi-gen
-        
-        # Setup git configuration
-        git config --global --add safe.directory /pi-gen
-        
-        # Make sure binfmt_misc is properly configured inside the container
-        echo "Checking binfmt_misc status in container:"
-        ls -la /proc/sys/fs/binfmt_misc/ || echo "binfmt_misc directory not accessible"
-        
-        # Add fallback for binfmt_misc
-        if [ ! -d "/proc/sys/fs/binfmt_misc" ] || [ -z "$(grep -l arm /proc/sys/fs/binfmt_misc/* 2>/dev/null)" ]; then
-          echo "Warning: ARM binary format handlers not found, attempting to set up manually..."
-          # Try registering QEMU inside the container again
-          if [ -x /usr/bin/qemu-arm-static ]; then
-            echo "QEMU ARM binary exists, continuing build"
-          else
-            echo "Installing QEMU inside container..."
-            apt-get update && apt-get install -y --no-install-recommends qemu-user-static binfmt-support
-          fi
-        fi
-        
-        # Run the actual build script
-        echo "Starting pi-gen build process..."
-        ./build.sh 2>&1 | tee /pi-gen/deploy/build.log
-        build_exit_code=${PIPESTATUS[0]}
-        
-        # Force unmount any potential stuck mounts
-        echo "Cleaning up any stuck mounts..."
-        for mnt in $(mount | grep /pi-gen | awk '{print $3}' | sort -r); do
-          echo "Unmounting $mnt"
-          umount -f $mnt 2>/dev/null || true
-        done
-        
-        # Copy *all* potential output files to the deploy directory
-        echo "Searching for image files to save as artifacts..."
-        mkdir -p /pi-gen/deploy/images
-        find /pi-gen/work -type f -name "*.img" -o -name "*.img.xz" -o -name "*.zip" | xargs -I{} cp -v {} /pi-gen/deploy/images/ || echo "No image files found"
-        
-        # Create a manifest of all work directory files over 5MB
-        find /pi-gen/work -type f -size +5M | sort > /pi-gen/deploy/large_files.txt
-        
-        # Return the build script's exit code
-        exit $build_exit_code
-        EOF
-        
-        chmod +x build_wrapper.sh
-        
-        # Configure build settings
+        # Configure pi-gen settings
         echo "VERBOSE=1" >> config
         echo "DEBUG=1" >> config
-        echo "CONTINUE=1" >> config  # Don't stop on errors
         echo "USE_QEMU=1" >> config
         
-        # Run the build in a privileged container with our wrapper script
-        # Explicitly map binfmt_misc and ensure ARM emulation is properly set up
+        # Create a deploy directory structure for artifacts
+        mkdir -p deploy/images deploy/debug
+        
+        echo "Running build with wrapper script..."
+        # Run the build directly without mounting binfmt_misc (which causes permission issues)
         docker run --rm --privileged \
           -v $(pwd):/pi-gen:rw \
           -v $(pwd)/deploy:/pi-gen/deploy:rw \
           -v $(pwd)/work:/pi-gen/work:rw \
-          -v $(pwd)/build_wrapper.sh:/build_wrapper.sh:ro \
-          -v /proc/sys/fs/binfmt_misc:/proc/sys/fs/binfmt_misc:ro \
-          -v /usr/bin/qemu-arm-static:/usr/bin/qemu-arm-static:ro \
+          -v $(pwd)/build_wrapper.sh:/pi-gen/build_wrapper.sh:ro \
           -e IMG_NAME="PiCaptivePortal-$(date +%Y-%m-%d)" \
           -e VERBOSE=1 \
           -e DEBUG=1 \
           -e CONTINUE=1 \
           -e USE_QEMU=1 \
-          -e QEMU_EXECVE=1 \
           pi-gen-builder \
-          /build_wrapper.sh || echo "Build process encountered errors, but attempting to collect any generated artifacts"
+          /pi-gen/build_wrapper.sh || echo "Build process encountered errors, artifacts were collected if available"
+        
+        # Additional safety to copy build log outside container if it exists
+        if [ -f "deploy/build.log" ]; then
+          cp deploy/build.log deploy/debug/ || true
+        fi
       
     - name: List build output
       run: |
@@ -230,7 +179,10 @@ jobs:
       with:
         name: raspberry-pi-image
         path: |
-          deploy/**/*
+          deploy/images/**/*
+          deploy/build.log
+          deploy/build-report.txt
+          deploy/debug/**/*
           build_wrapper.sh
         retention-days: 7
         if-no-files-found: warn
@@ -244,8 +196,11 @@ jobs:
           work/**/*.zip
           work/**/*.xz
           work/**/*.gz
-          work/**/rootfs*.tar*
-        retention-days: 2
+          work/**/*.tar*
+          work/**/*rootfs*.tar*
+          work/**/*_image*
+          work/**/*filesystem*
+        retention-days: 3
         if-no-files-found: ignore
         
     - name: Create GitHub Release
