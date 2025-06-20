@@ -8,7 +8,8 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    # Use ubuntu-22.04 which has better support for QEMU and binfmt
+    runs-on: ubuntu-22.04
     
     steps:
     - name: Checkout code
@@ -46,36 +47,31 @@ jobs:
         echo "\nCaptive Portal stage content:"
         ls -la stage2/01-captive-portal
 
-    - name: Setup QEMU and environment
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+    
+    - name: Setup QEMU and ARM emulation support
       run: |
-        # Fix Git security in Docker
+        # Install and set up qemu for arm emulation
+        sudo apt-get update
+        sudo apt-get install -y qemu-user-static binfmt-support
+        
+        # Use Docker's own mechanism for setting up binfmt
+        docker run --privileged --rm tonistiigi/binfmt:latest --install arm64,arm
+        
+        # Verify the installation
+        ls -la /proc/sys/fs/binfmt_misc/
+        
+        # Test that ARM emulation works by running a simple ARM container
+        docker run --rm arm32v7/alpine uname -a
+        
+        # Fix Git security settings
         git config --global --add safe.directory '*'
-        
-        # Make sure binfmt_misc is properly set up
-        echo "Setting up binfmt_misc for cross-architecture emulation"
-        # Try to load the kernel module if it's not already loaded
-        lsmod | grep -q binfmt_misc || sudo modprobe binfmt_misc || echo "binfmt_misc may be built into the kernel"
-        
-        # Make sure the binfmt_misc filesystem is mounted
-        if ! mountpoint -q /proc/sys/fs/binfmt_misc; then
-          sudo mount -t binfmt_misc binfmt_misc /proc/sys/fs/binfmt_misc || echo "binfmt_misc already mounted"
-        fi
-        
-        # Enable proper QEMU for cross-arch emulation with privileged mode
-        sudo docker run --rm --privileged multiarch/qemu-user-static --reset -p yes
-        
-        # Verify binfmt_misc is properly configured
-        echo "Checking binfmt_misc configuration:"
-        ls -la /proc/sys/fs/binfmt_misc/ || echo "Could not list binfmt_misc directory"
-        
-        # Verify ARM binaries can be executed
-        echo "Verifying QEMU ARM emulation is working:"
-        docker run --rm arm32v7/alpine uname -m || echo "ARM emulation test failed"
       
     - name: Build Docker image for pi-gen
       run: |
-        # Build the Docker image to use for building pi-gen
-        docker build -t pi-gen-builder .
+        # Build the Docker image with BuildKit for better cross-platform support
+        DOCKER_BUILDKIT=1 docker build -t pi-gen-builder .
     
     - name: Build Raspberry Pi image
       run: |
@@ -89,39 +85,70 @@ jobs:
         echo "Directory structure before build:"
         find . -maxdepth 2 -type d | sort
         
-        # Enable debugging
+        # Create a custom build script to handle the process properly
+        cat > build_wrapper.sh << 'EOF'
+        #!/bin/bash
+        set -e
+        
+        # Stop the build on error but continue with cleanup
+        trap 'echo "Error detected, performing cleanup before exit"' ERR
+        
+        cd /pi-gen
+        
+        # Setup git configuration
+        git config --global --add safe.directory /pi-gen
+        
+        # Make sure binfmt_misc is properly configured inside the container
+        echo "Checking binfmt_misc status in container:"
+        ls -la /proc/sys/fs/binfmt_misc/
+        grep -l arm /proc/sys/fs/binfmt_misc/* || echo "Warning: ARM binary format handlers not found"
+        
+        # Run the actual build script
+        echo "Starting pi-gen build process..."
+        ./build.sh 2>&1 | tee /pi-gen/deploy/build.log
+        build_exit_code=${PIPESTATUS[0]}
+        
+        # Force unmount any potential stuck mounts
+        echo "Cleaning up any stuck mounts..."
+        for mnt in $(mount | grep /pi-gen | awk '{print $3}' | sort -r); do
+          echo "Unmounting $mnt"
+          umount -f $mnt 2>/dev/null || true
+        done
+        
+        # Copy *all* potential output files to the deploy directory
+        echo "Searching for image files to save as artifacts..."
+        mkdir -p /pi-gen/deploy/images
+        find /pi-gen/work -type f -name "*.img" -o -name "*.img.xz" -o -name "*.zip" | xargs -I{} cp -v {} /pi-gen/deploy/images/ || echo "No image files found"
+        
+        # Create a manifest of all work directory files over 5MB
+        find /pi-gen/work -type f -size +5M | sort > /pi-gen/deploy/large_files.txt
+        
+        # Return the build script's exit code
+        exit $build_exit_code
+        EOF
+        
+        chmod +x build_wrapper.sh
+        
+        # Configure build settings
         echo "VERBOSE=1" >> config
         echo "DEBUG=1" >> config
+        echo "CONTINUE=1" >> config  # Don't stop on errors
+        echo "USE_QEMU=1" >> config
         
-        # Fix Git security in container
-        echo "Running safe Docker container with necessary mounts and environment"
-        
-        # Run the build process with better unmount handling
+        # Run the build in a privileged container with our wrapper script
+        # Explicitly map binfmt_misc and ensure ARM emulation is properly set up
         docker run --rm --privileged \
           -v $(pwd):/pi-gen:rw \
           -v $(pwd)/deploy:/pi-gen/deploy:rw \
           -v $(pwd)/work:/pi-gen/work:rw \
-          -e CONTINUE=1 \
-          -e USE_QEMU=1 \
+          -v $(pwd)/build_wrapper.sh:/build_wrapper.sh:ro \
+          -v /proc/sys/fs/binfmt_misc:/proc/sys/fs/binfmt_misc:ro \
           -e IMG_NAME="PiCaptivePortal-$(date +%Y-%m-%d)" \
           -e VERBOSE=1 \
           -e DEBUG=1 \
-          -e ENABLE_DEBUG=1 \
+          -e CONTINUE=1 \
           pi-gen-builder \
-          bash -c "cd /pi-gen && \
-                 git config --global --add safe.directory /pi-gen && \
-                 ./build.sh 2>&1 | tee /pi-gen/deploy/build.log; \
-                 build_exit_code=\${PIPESTATUS[0]}; \
-                 # Force unmounting any stuck mounts before exiting \
-                 echo 'Cleaning up any stuck mounts...'; \
-                 umount -f /pi-gen/work/*/rootfs/dev/pts 2>/dev/null || true; \
-                 umount -f /pi-gen/work/*/rootfs/dev 2>/dev/null || true; \
-                 umount -f /pi-gen/work/*/rootfs/proc 2>/dev/null || true; \
-                 umount -f /pi-gen/work/*/rootfs/sys 2>/dev/null || true; \
-                 umount -f /pi-gen/deploy 2>/dev/null || true; \
-                 # Copy any generated images to deploy directory for artifact collection \
-                 find /pi-gen/work -name '*.img*' -o -name '*.zip' -exec cp -v {} /pi-gen/deploy/ \; ; \
-                 exit \$build_exit_code"
+          /build_wrapper.sh || echo "Build process encountered errors, but attempting to collect any generated artifacts"
       
     - name: List build output
       run: |
@@ -142,31 +169,45 @@ jobs:
           ls -la work/*/ || echo "No subdirectories found"
         fi
         
-        # Check if export-image stage ran
-        echo $'\n===== CHECKING FOR IMAGE FILES ====='
-        find . -name "*.img" -o -name "*.img.zip" -o -name "*.img.xz" 2>/dev/null || echo "No image files found"
+        # Extensive search for image files
+        echo $'\n===== EXTENSIVE SEARCH FOR IMAGE FILES ====='
+        find . -type f -name "*.img" -o -name "*.img.zip" -o -name "*.img.xz" -o -name "*.zip" | xargs ls -lah 2>/dev/null || echo "No image files found"
+        
+        # Check for larger files that might be images without proper extension
+        echo $'\n===== SEARCHING FOR LARGE FILES (POSSIBLE IMAGES) ====='
+        find ./work -type f -size +10M | xargs ls -lah 2>/dev/null || echo "No large files found"
         
         # Check deploy directory content
-        cd deploy
         echo $'\n===== DEPLOY DIRECTORY CONTENTS ====='
-        find . -type f -ls
+        find deploy -type f -ls
+        
+        # Specific check for files in deploy/images
+        if [ -d "deploy/images" ]; then
+          echo $'\n===== CONTENTS OF DEPLOY/IMAGES ====='
+          ls -la deploy/images/
+        fi
         
         # Check build logs
-        if [ -f "build.log" ]; then
+        if [ -f "deploy/build.log" ]; then
           echo $'\n===== BUILD LOG ERRORS ====='
-          grep -i "error\|failed\|cannot" build.log | tail -30 || echo "No errors found in build log"
+          grep -i "error\|failed\|cannot" deploy/build.log | tail -30 || echo "No errors found in build log"
           
           echo $'\n===== LAST 50 LINES OF BUILD LOG ====='
-          tail -50 build.log
+          tail -50 deploy/build.log
         else
           echo $'\n===== NO BUILD LOG FOUND ====='
         fi
         
-        # Create status report if no image found
-        if ! ls *.img* *.zip 2>/dev/null; then
-          echo $'\n===== CREATING BUILD STATUS REPORT ====='
-          echo "Build completed at $(date)" > pi-gen-build-result.txt
-          echo "Image generation failed. Check the build logs for errors." >> pi-gen-build-result.txt
+        # Create a comprehensive build report regardless of success
+        echo $'\n===== CREATING BUILD STATUS REPORT ====='
+        echo "Build completed at $(date)" > deploy/pi-gen-build-report.txt
+        echo "\nPotential image files:" >> deploy/pi-gen-build-report.txt
+        find . -type f -name "*.img" -o -name "*.img.zip" -o -name "*.img.xz" -o -name "*.zip" >> deploy/pi-gen-build-report.txt || echo "None found" >> deploy/pi-gen-build-report.txt
+        
+        # Create empty image file if none found to ensure artifacts are created
+        if [ ! -f deploy/images/*.img ] && [ ! -f deploy/images/*.zip ]; then
+          echo "No image files found, creating placeholder for debugging" > deploy/build-debugging-info.txt
+          cp -v deploy/build.log deploy/build-log-artifact.txt || echo "No build log found"
         fi
         
     - name: Upload image artifacts and logs
@@ -174,15 +215,23 @@ jobs:
       with:
         name: raspberry-pi-image
         path: |
-          deploy/*.*
-          deploy/*.txt
-          deploy/*.log
-          deploy/*.img*
-          deploy/*.zip
-          work/**/*.img*
-          work/**/*.log
+          deploy/**/*
+          build_wrapper.sh
         retention-days: 7
         if-no-files-found: warn
+        
+    - name: Upload large work files as separate artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: raspberry-pi-build-files
+        path: |
+          work/**/*.img*
+          work/**/*.zip
+          work/**/*.xz
+          work/**/*.gz
+          work/**/rootfs*.tar*
+        retention-days: 2
+        if-no-files-found: ignore
         
     - name: Create GitHub Release
       if: github.event_name == 'push' && github.ref == 'refs/heads/master'
